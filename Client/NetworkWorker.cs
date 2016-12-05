@@ -9,7 +9,114 @@ using System.Threading;
 using UnityEngine;
 using DarkMultiPlayerCommon;
 using MessageStream2;
+using System.Runtime.InteropServices;
 
+namespace WinsockAPI
+{
+    public class Winsock2
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WSAData
+        {
+            public ushort wVersion;
+            public ushort wHighVersion;
+            public ushort iMaxSockets;
+            public ushort iMaxUdpDg;
+            public uint lpVendorInfo;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 257)]
+            public String szDescription;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 129)]
+            public String szSystemStatus;
+        }
+        //Winsock Addon
+        [StructLayout(LayoutKind.Explicit, Pack = 1)]
+        public struct in_addr6
+        {
+            [FieldOffset(0)]
+            public short Byte01;
+            [FieldOffset(2)]
+            public short Byte02;
+            [FieldOffset(4)]
+            public short Byte03;
+            [FieldOffset(6)]
+            public short Byte04;
+            [FieldOffset(8)]
+            public short Byte05;
+            [FieldOffset(10)]
+            public short Byte06;
+            [FieldOffset(12)]
+            public short Byte07;
+            [FieldOffset(14)]
+            public short Byte08;
+
+        };
+
+        [StructLayout(LayoutKind.Explicit, Pack = 1)]
+        public struct sockaddr_in6
+        {
+            [FieldOffset(0)]
+            public short sin6_family;     /* AF_INET6 */
+            [FieldOffset(2)]
+            public ushort sin6_port;       /* Transport level port number */
+            [FieldOffset(4)]
+            public ulong sin6_flowinfo;   /* IPv6 flow information */
+            [FieldOffset(8)]
+            public in_addr6 sin6_addr;       /* IPv6 address */
+            [FieldOffset(24)]
+            public ulong sin6_scope_id;   /* set of interfaces for a scope */
+        };
+
+        [StructLayout(LayoutKind.Explicit)]
+        public struct in_addr
+        {
+            [FieldOffset(0)]
+            public ulong S_addr;
+        };
+
+        [StructLayout(LayoutKind.Explicit, Pack = 1)]
+        public struct sockaddr_in
+        {
+            [FieldOffset(0)]
+            public ushort sin_family;
+            [FieldOffset(2)]
+            public ushort sin_port;
+            [FieldOffset(4)]
+            public in_addr sin_addr;
+            [FieldOffset(8)]
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 8)]
+            public string sin_zero;
+        };
+        [StructLayout(LayoutKind.Explicit, Pack = 1)]
+        public struct sockaddr
+        {
+            [FieldOffset(0)]
+            public sockaddr_in6 sa_data;                   // Up to 14 bytes of direct address.
+            [FieldOffset(0)]
+            public sockaddr_in sa_datav4;
+        }
+
+        [DllImport("wsock32.dll")]
+        public static extern Int32 WSAStartup(short wVersionRequested, ref WSAData wsaData);
+        [DllImport("wsock32.dll")]
+        public static extern int connect(int s, ref sockaddr addr, int namelen);
+        [DllImport("wsock32.dll")]
+        public static extern int socket(int af, int type, int protocol);
+        [DllImport("wsock32.dll")]
+        public static extern int shutdown(int s, int how);
+        [DllImport("wsock32.dll")]
+        public static extern int closesocket(int s);
+        [DllImport("wsock32.dll")]
+        public static extern int recv(int s, [In, Out] byte[] buf, int len, int flags);
+        [DllImport("wsock32.dll")]
+        public static extern int WSAGetLastError();
+        [DllImport("wsock32.dll")]
+        public static extern int send(int s, [In, Out] byte[] buf, int len, int flags);
+        [DllImport("NtDll.dll")]
+        public static extern int RtlIpv6StringToAddressExW([MarshalAs(UnmanagedType.LPWStr)] String AddressString, ref in_addr6 Address, ref ulong ScopeId, ref ushort Port);
+        [DllImport("NtDll.dll")]
+        public static extern int RtlIpv4StringToAddressExW([MarshalAs(UnmanagedType.LPWStr)] string AddressString, int Strict, ref in_addr Address, ref ushort Port);
+    }
+}
 namespace DarkMultiPlayer
 {
     public class NetworkWorker
@@ -22,7 +129,7 @@ namespace DarkMultiPlayer
         }
 
         private static NetworkWorker singleton = new NetworkWorker();
-        private TcpClient clientConnection = null;
+        private int clientConnection = 0;
         private float lastSendTime = 0f;
         private AutoResetEvent sendEvent = new AutoResetEvent(false);
         private Queue<ClientMessage> sendMessageQueueHigh = new Queue<ClientMessage>();
@@ -240,63 +347,13 @@ namespace DarkMultiPlayer
                 receiveSplitMessage = null;
                 receiveSplitMessageBytesLeft = 0;
                 isReceivingSplitMessage = false;
-                IPAddress destinationAddress;
-                if (!IPAddress.TryParse(address, out destinationAddress))
-                {
-                    try
-                    {
-                        IPHostEntry dnsResult = Dns.GetHostEntry(address);
-                        if (dnsResult.AddressList.Length > 0)
-                        {
-                            List<IPEndPoint> addressToConnectTo = new List<IPEndPoint>();
-                            foreach (IPAddress testAddress in dnsResult.AddressList)
-                            {
-                                if (testAddress.AddressFamily == AddressFamily.InterNetwork || testAddress.AddressFamily == AddressFamily.InterNetworkV6)
-                                {
-                                    Interlocked.Increment(ref connectingThreads);
-                                    Client.fetch.status = "Connecting";
-                                    lastSendTime = UnityEngine.Time.realtimeSinceStartup;
-                                    lastReceiveTime = UnityEngine.Time.realtimeSinceStartup;
-                                    state = ClientState.CONNECTING;
-                                    addressToConnectTo.Add(new IPEndPoint(testAddress, port));
-                                }
-                            }
-                            foreach (IPEndPoint endpoint in addressToConnectTo)
-                            {
-                                Thread parallelConnectThread = new Thread(new ParameterizedThreadStart(ConnectToServerAddress));
-                                parallelConnectThreads.Add(parallelConnectThread);
-                                parallelConnectThread.Start(endpoint);
-                            }
-                            if (addressToConnectTo.Count == 0)
-                            {
-                                DarkLog.Debug("DNS does not contain a valid address entry");
-                                Client.fetch.status = "DNS does not contain a valid address entry";
-                                return;
-                            }
-                        }
-                        else
-                        {
-                            DarkLog.Debug("Address is not a IP or DNS name");
-                            Client.fetch.status = "Address is not a IP or DNS name";
-                            return;
-                        }
-                    }
-                    catch (Exception e)
-                    {
-                        DarkLog.Debug("DNS Error: " + e.ToString());
-                        Client.fetch.status = "DNS Error: " + e.Message;
-                        return;
-                    }
-                }
-                else
-                {
-                    Interlocked.Increment(ref connectingThreads);
-                    Client.fetch.status = "Connecting";
-                    lastSendTime = UnityEngine.Time.realtimeSinceStartup;
-                    lastReceiveTime = UnityEngine.Time.realtimeSinceStartup;
-                    state = ClientState.CONNECTING;
-                    ConnectToServerAddress(new IPEndPoint(destinationAddress, port));
-                }
+                Interlocked.Increment(ref connectingThreads);
+                Client.fetch.status = "Connecting : " + address;
+                lastSendTime = UnityEngine.Time.realtimeSinceStartup;
+                lastReceiveTime = UnityEngine.Time.realtimeSinceStartup;
+                state = ClientState.CONNECTING;
+                ConnectToServerAddress(address);
+                //}
             }
 
             while (state == ClientState.CONNECTING)
@@ -308,22 +365,40 @@ namespace DarkMultiPlayer
 
         private void ConnectToServerAddress(object destinationObject)
         {
-            IPEndPoint destination = (IPEndPoint)destinationObject;
-            TcpClient testConnection = new TcpClient(destination.AddressFamily);
-            testConnection.NoDelay = true;
+            long Error = 0;
+            int testConnection = -1;
+            String AddrString = (string)destinationObject;
+            WinsockAPI.Winsock2.sockaddr IpDest = new WinsockAPI.Winsock2.sockaddr();
+            WinsockAPI.Winsock2.WSAData Data = new WinsockAPI.Winsock2.WSAData();
+            Error = WinsockAPI.Winsock2.WSAStartup(0x0202, ref Data);
+
+
+            if (AddrString.Contains("["))
+            {
+                testConnection = WinsockAPI.Winsock2.socket(23, 1, 6);
+                IpDest.sa_data.sin6_family = 23;
+                Error = WinsockAPI.Winsock2.RtlIpv6StringToAddressExW(AddrString, ref IpDest.sa_data.sin6_addr, ref IpDest.sa_data.sin6_scope_id, ref IpDest.sa_data.sin6_port);
+            }
+            else
+            {
+                testConnection = WinsockAPI.Winsock2.socket((int)AddressFamily.InterNetwork, 1, 6);
+                IpDest.sa_data.sin6_family = (short)AddressFamily.InterNetwork;
+                Error = WinsockAPI.Winsock2.RtlIpv4StringToAddressExW(AddrString, 0, ref IpDest.sa_datav4.sin_addr, ref IpDest.sa_datav4.sin_port);
+            }
+
+            Error = WinsockAPI.Winsock2.connect(testConnection, ref IpDest, 28);
+            Error = WinsockAPI.Winsock2.WSAGetLastError();
+
             try
             {
-                DarkLog.Debug("Connecting to " + destination.Address + " port " + destination.Port + "...");
-                testConnection.Connect(destination.Address, destination.Port);
                 lock (connectLock)
                 {
                     if (state == ClientState.CONNECTING)
                     {
-                        if (testConnection.Connected)
+                        if (Error != -1)
                         {
                             clientConnection = testConnection;
                             //Timeout didn't expire.
-                            DarkLog.Debug("Connected to " + destination.Address + " port " + destination.Port);
                             Client.fetch.status = "Connected";
                             state = ClientState.CONNECTED;
                             sendThread = new Thread(new ThreadStart(SendThreadMain));
@@ -345,10 +420,11 @@ namespace DarkMultiPlayer
                     }
                     else
                     {
-                        if (testConnection.Connected)
+                        if (testConnection != -1)
                         {
-                            testConnection.GetStream().Close();
-                            testConnection.GetStream().Dispose();
+                            WinsockAPI.Winsock2.shutdown(testConnection, 2);
+                            WinsockAPI.Winsock2.closesocket(testConnection);
+                            testConnection = -1;
                         }
                     }
                 }
@@ -433,11 +509,11 @@ namespace DarkMultiPlayer
 
                     try
                     {
-                        if (clientConnection != null)
+                        if (clientConnection != -1)
                         {
-                            clientConnection.GetStream().Close();
-                            clientConnection.Close();
-                            clientConnection = null;
+                            WinsockAPI.Winsock2.shutdown(clientConnection, 2);
+                            WinsockAPI.Winsock2.closesocket(clientConnection);
+                            clientConnection = -1;
                         }
                     }
                     catch (Exception e)
@@ -496,6 +572,9 @@ namespace DarkMultiPlayer
 
         private void StartReceivingIncomingMessages()
         {
+            var RecvBuffer = new Byte[5242880];
+            int CurOffset = 0;
+            int MaxRecv = 5242880;
             lastReceiveTime = UnityEngine.Time.realtimeSinceStartup;
             //Allocate byte for header
             isReceivingMessage = false;
@@ -506,11 +585,22 @@ namespace DarkMultiPlayer
             {
                 while (true)
                 {
-                    int bytesRead = clientConnection.GetStream().Read(receiveMessage.data, receiveMessage.data.Length - receiveMessageBytesLeft, receiveMessageBytesLeft);
-                    bytesReceived += bytesRead;
-                    receiveMessageBytesLeft -= bytesRead;
+                    if (receiveMessageBytesLeft > 5242880)
+                    {
+                        MaxRecv = 5242880;
+                    }
+                    else
+                    {
+                        MaxRecv = receiveMessageBytesLeft;
+                    }
+                    System.Array.Clear(RecvBuffer, 0, 5242880);
+                    int bytesRead = WinsockAPI.Winsock2.recv(clientConnection, RecvBuffer, receiveMessageBytesLeft, 0);
                     if (bytesRead > 0)
                     {
+                        System.Array.Copy(RecvBuffer, 0, receiveMessage.data, CurOffset, bytesRead);
+                        CurOffset += bytesRead;
+                        bytesReceived += bytesRead;
+                        receiveMessageBytesLeft -= bytesRead;
                         lastReceiveTime = UnityEngine.Time.realtimeSinceStartup;
                     }
                     else
@@ -551,6 +641,7 @@ namespace DarkMultiPlayer
                                     receiveMessage.type = 0;
                                     receiveMessage.data = new byte[8];
                                     receiveMessageBytesLeft = receiveMessage.data.Length;
+                                    CurOffset = 0;
                                 }
                                 else
                                 {
@@ -559,6 +650,7 @@ namespace DarkMultiPlayer
                                         isReceivingMessage = true;
                                         receiveMessage.data = new byte[messageLength];
                                         receiveMessageBytesLeft = receiveMessage.data.Length;
+                                        CurOffset = 0;
                                     }
                                     else
                                     {
@@ -578,6 +670,7 @@ namespace DarkMultiPlayer
                             receiveMessage.type = 0;
                             receiveMessage.data = new byte[8];
                             receiveMessageBytesLeft = receiveMessage.data.Length;
+                            CurOffset = 0;
                         }
                     }
                     if (state < ClientState.CONNECTED || state == ClientState.DISCONNECTING)
@@ -724,7 +817,7 @@ namespace DarkMultiPlayer
             lastSendTime = UnityEngine.Time.realtimeSinceStartup;
             try
             {
-                clientConnection.GetStream().Write(messageBytes, 0, messageBytes.Length);
+                WinsockAPI.Winsock2.send(clientConnection, messageBytes, messageBytes.Length, 0);
                 if (terminateOnNextMessageSend)
                 {
                     Disconnect("Connection ended: " + connectionEndReason);
@@ -796,6 +889,9 @@ namespace DarkMultiPlayer
                         break;
                     case ServerMessageType.KERBAL_COMPLETE:
                         HandleKerbalComplete();
+                        break;
+                    case ServerMessageType.KERBAL_REMOVE:
+                        HandleKerbalRemove(message.data);
                         break;
                     case ServerMessageType.VESSEL_LIST:
                         HandleVesselList(message.data);
@@ -1064,23 +1160,98 @@ namespace DarkMultiPlayer
                 else
                 {
                     GameParameters newParameters = new GameParameters();
-                    newParameters.Difficulty.AllowStockVessels = mr.Read<bool>();
-                    newParameters.Difficulty.AutoHireCrews = mr.Read<bool>();
-                    newParameters.Difficulty.BypassEntryPurchaseAfterResearch = mr.Read<bool>();
-                    newParameters.Difficulty.IndestructibleFacilities = mr.Read<bool>();
-                    newParameters.Difficulty.MissingCrewsRespawn = mr.Read<bool>();
-                    newParameters.Difficulty.ReentryHeatScale = mr.Read<float>();
-                    newParameters.Difficulty.ResourceAbundance = mr.Read<float>();
-                    newParameters.Flight.CanQuickLoad = newParameters.Flight.CanRestart = newParameters.Flight.CanLeaveToEditor = mr.Read<bool>();
-                    newParameters.Career.FundsGainMultiplier = mr.Read<float>();
-                    newParameters.Career.FundsLossMultiplier = mr.Read<float>();
-                    newParameters.Career.RepGainMultiplier = mr.Read<float>();
-                    newParameters.Career.RepLossMultiplier = mr.Read<float>();
-                    newParameters.Career.RepLossDeclined = mr.Read<float>();
-                    newParameters.Career.ScienceGainMultiplier = mr.Read<float>();
-                    newParameters.Career.StartingFunds = mr.Read<float>();
-                    newParameters.Career.StartingReputation = mr.Read<float>();
-                    newParameters.Career.StartingScience = mr.Read<float>();
+                    //GameParameters.AdvancedParams newAdvancedParameters = new GameParameters.AdvancedParams();
+                    //CommNet.CommNetParams newCommNetParameters = new CommNet.CommNetParams();
+
+                    newParameters.preset = GameParameters.Preset.Custom;
+
+                    newParameters.Difficulty.AllowStockVessels = false;
+                    newParameters.Difficulty.AutoHireCrews = false;
+                    newParameters.Difficulty.RespawnTimer = 7200;
+                    newParameters.Difficulty.BypassEntryPurchaseAfterResearch = false;
+                    newParameters.Difficulty.IndestructibleFacilities = false;
+                    newParameters.Difficulty.MissingCrewsRespawn = false;
+                    newParameters.Difficulty.ReentryHeatScale = 1;
+                    newParameters.Difficulty.ResourceAbundance = 0.65F;
+                    newParameters.Difficulty.EnableCommNet = false;
+                    
+                    newParameters.Career.FundsGainMultiplier = 1.00F;
+                    newParameters.Career.FundsLossMultiplier = 2;
+                    newParameters.Career.RepGainMultiplier = 0.60F;
+                    newParameters.Career.RepLossMultiplier = 2;
+                    newParameters.Career.RepLossDeclined = 0;
+                    newParameters.Career.ScienceGainMultiplier = 0.60F;
+                    newParameters.Career.StartingFunds = 0;
+                    newParameters.Career.StartingReputation = 0;
+                    newParameters.Career.StartingScience = 0;
+                    newParameters.Career.TechTreeUrl = "GameData/ETT/EngTechTree.cfg";
+
+
+			        newParameters.Flight.CanQuickSave = true;
+			        newParameters.Flight.CanQuickLoad = false;
+			        newParameters.Flight.CanAutoSave = true;
+			        newParameters.Flight.CanUseMap = true;
+			        newParameters.Flight.CanSwitchVesselsNear = true;
+			        newParameters.Flight.CanSwitchVesselsFar = true;
+			        newParameters.Flight.CanTimeWarpHigh = true;
+			        newParameters.Flight.CanTimeWarpLow = true;
+			        newParameters.Flight.CanEVA = true;
+			        newParameters.Flight.CanIVA = true;
+			        newParameters.Flight.CanBoard = true;
+			        newParameters.Flight.CanRestart = false;
+			        newParameters.Flight.CanLeaveToEditor = false;
+			        newParameters.Flight.CanLeaveToTrackingStation = true;
+			        newParameters.Flight.CanLeaveToSpaceCenter = true;
+                    newParameters.Flight.CanLeaveToMainMenu = true;
+                    
+                    newParameters.Editor.CanSave = true;
+			        newParameters.Editor.CanLoad = true;
+			        newParameters.Editor.CanStartNew = true;
+			        newParameters.Editor.CanLaunch = true;
+			        newParameters.Editor.CanLeaveToSpaceCenter = true;
+			        newParameters.Editor.CanLeaveToMainMenu = false;
+                    newParameters.Editor.startUpMode = 0;
+
+
+                    newParameters.TrackingStation.CanAbortVessel = true;
+                    newParameters.TrackingStation.CanFlyVessel = true;
+                    newParameters.TrackingStation.CanLeaveToMainMenu = false;
+                    newParameters.TrackingStation.CanLeaveToSpaceCenter = true;
+
+                    newParameters.SpaceCenter.CanGoInSPH = true;
+                    newParameters.SpaceCenter.CanGoInTrackingStation = true;
+                    newParameters.SpaceCenter.CanGoInVAB = true;
+                    newParameters.SpaceCenter.CanGoToAdmin = true;
+                    newParameters.SpaceCenter.CanGoToAstronautC = true;
+                    newParameters.SpaceCenter.CanGoToMissionControl = true;
+                    newParameters.SpaceCenter.CanGoToRnD = true;
+                    newParameters.SpaceCenter.CanLaunchAtPad = true;
+                    newParameters.SpaceCenter.CanLaunchAtRunway = true;
+                    newParameters.SpaceCenter.CanLeaveToMainMenu = true;
+                    newParameters.SpaceCenter.CanSelectFlag = true;
+
+
+                    //New KSP 1.2 Settings
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().EnableKerbalExperience = true;
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().ImmediateLevelUp = true;
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().AllowNegativeCurrency = true;
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().ResourceTransferObeyCrossfeed = true;
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().BuildingImpactDamageMult = 0.20F;
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().PartUpgradesInCareer = true;
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().PartUpgradesInSandbox = false;
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().PressurePartLimits = true;
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().GPartLimits = true;
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().GKerbalLimits = true;
+                    newParameters.CustomParams<GameParameters.AdvancedParams>().KerbalGToleranceMult = 1.0F;
+
+                    newParameters.CustomParams<CommNet.CommNetParams>().requireSignalForControl = false;
+                    newParameters.CustomParams<CommNet.CommNetParams>().plasmaBlackout = true;
+                    newParameters.CustomParams<CommNet.CommNetParams>().rangeModifier = 0.65F;
+                    newParameters.CustomParams<CommNet.CommNetParams>().DSNModifier = 1.00F;
+                    newParameters.CustomParams<CommNet.CommNetParams>().occlusionMultiplierVac = 1.00F;
+                    newParameters.CustomParams<CommNet.CommNetParams>().occlusionMultiplierAtm = 1.00F;
+                    newParameters.CustomParams<CommNet.CommNetParams>().enableGroundStations = false;
+
                     Client.fetch.serverParameters = newParameters;
                 }
             }
@@ -1188,6 +1359,17 @@ namespace DarkMultiPlayer
             state = ClientState.KERBALS_SYNCED;
             DarkLog.Debug("Kerbals Synced!");
             Client.fetch.status = "Kerbals synced";
+        }
+
+        private void HandleKerbalRemove(byte[] messageData)
+        {
+            using (MessageReader mr = new MessageReader(messageData))
+            {
+                double planetTime = mr.Read<double>();
+                string kerbalName = mr.Read<string>();
+                DarkLog.Debug("Kerbal removed: " + kerbalName);
+                ScreenMessages.PostScreenMessage("Kerbal " + kerbalName + " removed from game", 5f, ScreenMessageStyle.UPPER_CENTER);
+            }
         }
 
         private void HandleVesselList(byte[] messageData)
@@ -1742,7 +1924,7 @@ namespace DarkMultiPlayer
                     return true;
                 }
             }
-            
+
             return false;
         }
 
@@ -1755,18 +1937,33 @@ namespace DarkMultiPlayer
                 DarkLog.Debug("Vessel " + vessel.vesselID + " has NaN position");
                 return;
             }
+
+            // Handle contract vessels
+            bool isContractVessel = false;
             foreach (ProtoPartSnapshot pps in vessel.protoPartSnapshots)
             {
                 foreach (ProtoCrewMember pcm in pps.protoModuleCrew.ToArray())
                 {
-                    if (pcm.type == ProtoCrewMember.KerbalType.Tourist)
+                    if (pcm.type == ProtoCrewMember.KerbalType.Tourist || pcm.type == ProtoCrewMember.KerbalType.Unowned)
                     {
-                        pps.protoModuleCrew.Remove(pcm);
+                        isContractVessel = true;
                     }
                 }
             }
+            if (!AsteroidWorker.fetch.VesselIsAsteroid(vessel) && (DiscoveryLevels)int.Parse(vessel.discoveryInfo.GetValue("state")) != DiscoveryLevels.Owned)
+            {
+                isContractVessel = true;
+            }
+
             ConfigNode vesselNode = new ConfigNode();
             vessel.Save(vesselNode);
+            if (isContractVessel)
+            {
+                ConfigNode dmpNode = new ConfigNode();
+                dmpNode.AddValue("contractOwner", Settings.fetch.playerPublicKey);
+                vesselNode.AddNode("DarkMultiPlayer", dmpNode);
+            }
+
             ClientMessage newMessage = new ClientMessage();
             newMessage.type = ClientMessageType.VESSEL_PROTO;
             byte[] vesselBytes = ConfigNodeSerializer.fetch.Serialize(vesselNode);
@@ -1858,6 +2055,20 @@ namespace DarkMultiPlayer
                 {
                     mw.Write<string>(Settings.fetch.playerName);
                 }
+                newMessage.data = mw.GetMessageBytes();
+            }
+            QueueOutgoingMessage(newMessage, false);
+        }
+        // Called from VesselWorker
+        public void SendKerbalRemove(string kerbalName)
+        {
+            DarkLog.Debug("Removing kerbal " + kerbalName + " from the server");
+            ClientMessage newMessage = new ClientMessage();
+            newMessage.type = ClientMessageType.KERBAL_REMOVE;
+            using (MessageWriter mw = new MessageWriter())
+            {
+                mw.Write<double>(Planetarium.GetUniversalTime());
+                mw.Write<string>(kerbalName);
                 newMessage.data = mw.GetMessageBytes();
             }
             QueueOutgoingMessage(newMessage, false);
